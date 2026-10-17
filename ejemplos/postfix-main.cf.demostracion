@@ -1,0 +1,132 @@
+# =============================================================================
+# DEMOSTRACIÓN — NO INSTALAR TAL CUAL
+# =============================================================================
+#
+# PLANTILLA DE DEMOSTRACIÓN. Este archivo NO se copia al servidor como está.
+# Sirve para mostrarle al cliente qué cambios hacen falta en Postfix.
+#
+# Debe ir en:
+#   /etc/postfix/main.cf
+# o mejor, en un archivo aparte incluido desde main.cf con:
+#   postconf -e "import_maps = hash:/etc/postfix/rspamd-milter.cf"
+#
+# -----------------------------------------------------------------------------
+# QUÉ HACE ESTA CONFIGURACIÓN
+# -----------------------------------------------------------------------------
+# Le dice a Postfix que entregue CADA mensaje, ya sea entrante o saliente, al
+# filtro Rspamd que corre en 127.0.0.1:11332.
+#
+# Rspamd es un milter: no recibe conexiones SMTP, es un servicio al que Postfix
+# le pasa el mensaje y le pregunta qué hacer con él (aceptar, marcar, rechazar).
+# Por eso aquí NO se abre ningún puerto SMTP nuevo ni se cambia nada del puerto
+# 25 o 587.
+#
+# -----------------------------------------------------------------------------
+# ANTES DE APLICAR
+# -----------------------------------------------------------------------------
+# 1. Confirme que el filtro está levantado y responde:
+#        docker compose exec rspamd rspamadm configtest
+#    Si `configtest` falla, Postfix va a dejar de aceptar correo. No aplique
+#    antes de tener el filtro sano.
+#
+# 2. Tenga a mano cómo revertir (ver más abajo, sección "REVERSIÓN").
+#
+# 3. Aplique los cambios en horario de baja carga. Un milter mal configurado
+#    puede dejar el servidor de correo sin recibir nada.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# 1. ACTIVAR EL MILTER DE RSPAMD
+# -----------------------------------------------------------------------------
+# Miltres para el correo que LLEGA por SMTP (smtpd).
+smtpd_milters = inet:127.0.0.1:11332
+
+# Miltres para el correo que Postfix genera localmente o que se reinyecta por
+# la cola (non_smtpd). Sin esto, el correo que genera el servidor no pasa por
+# el filtro y el DKIM saliente tampoco se agrega.
+non_smtpd_milters = inet:127.0.0.1:11332
+
+# Protocolo 6 es el estándar de Sendmail para milters. La documentación oficial
+# de Rspamd indica 6. Si el cliente ya usa otra cosa en sus otros milters,
+# hay que mantener la coherencia del conjunto.
+milter_protocol = 6
+
+# -----------------------------------------------------------------------------
+# 2. COMPORTAMIENTO CUANDO EL FILTRO NO RESPONDE
+# -----------------------------------------------------------------------------
+# ESTA ES LA LÍNEA MÁS IMPORTANTE DEL ARCHIVO Y LA QUE MÁS SE OLVIDA.
+#
+# `tempfail` significa: "si Rspamd está caído, el mensaje queda en cola y se
+# reintenta más tarde, en vez de aceptarlo sin filtrar".
+#
+# Por qué importa: si el servidor de correo acepta todo sin filtro cuando el
+# filtro se cae, un corte de cinco minutos de Rspamd se convierte en un hordeo
+# de spam que llega a las bandejas del cliente. Con `tempfail` el cliente se
+# queda sin correo unos minutos, que es mil veces mejor.
+#
+# ATENCIÓN: esto también significa que, si Rspamd se cae y no vuelve, el
+# correo entrante se va a quedar acumulado en la cola. Es la decisión correcta
+# para seguridad, pero hay que avisar al cliente y tener claro cómo se
+# revierte rápido si Rspamd no se puede levantar.
+#
+# La alternativa `accept` deja pasar el correo sin filtrar. Úsela solo si el
+# cliente prefiere recibir todo antes que recibir limpio.
+milter_default_action = tempfail
+
+# Tiempo que Postfix espera a Rspamd antes de decidir que no respondió.
+# 30 segundos es lo habitual. Si se pone muy alto, los envíos legitimos se
+# ralentizan; si muy bajo, Rspamd puede ser marcado como caído sin serlo.
+milter_connect_timeout = 30s
+milter_command_timeout = 30s
+# Este es el que más importa: Rspamd tiene que leer el mensaje entero para
+# escanearlo con ClamAV. Con cuerpo grande, 300s da margen.
+milter_content_timeout = 300s
+
+# Rspamd agrega cabeceras como X-Spam-Status, X-Spam-Flag, X-Rspamd-Result.
+# Con `no` Postfix las agrega él al final; con `yes` se las pasa tal cual.
+# Se deja en el comportamiento por defecto, pero queda anotado porque es la
+# forma de ver la decisión del filtro en la cabecera del correo.
+
+# =============================================================================
+# REVERSIÓN (guárdelo antes de aplicar)
+# =============================================================================
+#
+# Para volver atrás:
+#
+#   postconf -X smtpd_milters
+#   postconf -X non_smtpd_milters
+#   postconf -X milter_default_action
+#   postconf -X milter_protocol
+#   postconf -X milter_connect_timeout
+#   postconf -X milter_command_timeout
+#   postconf -X milter_content_timeout
+#   postfix reload
+#
+# Ojo: la orden es `postconf -X` para BORRAR una variable que quedó definida
+# desde la línea de comandos, o editar main.cf y hacer `postfix reload`.
+#
+# Para comprobar que Postfix realmente está usando el milter:
+#
+#   postconf -n | grep milter
+#
+# Para ver la conexión desde el lado del filtro:
+#
+#   docker compose logs -f rspamd
+# =============================================================================
+
+# =============================================================================
+# CHECKLIST ANTES DE DAR POR BUENO
+# =============================================================================
+# [ ] `docker compose exec rspamd rspamadm configtest` responde sin errores.
+# [ ] Postfix levanta:            systemctl status postfix
+# [ ] La conexión al milter funciona:
+#         postfix start   (o un envío de prueba y revisar el log)
+# [ ] Llega correo de verdad y trae cabeceras de Rspamd:
+#         postcat -v < /path/al/mensaje.eml
+# [ ] El spam de prueba cae, y el correo de un cliente legítimo pasa.
+# [ ] Se probó la reversión.
+#
+# Prueba classic de spam: envie un correo de prueba desde una cuenta externa
+# conocida como spammy y confirme que Postfix registra la acción de Rspamd.
+# =============================================================================

@@ -1,0 +1,42 @@
+# =============================================================================
+# Hefesto Studio — Kit Rspamd
+# Que NUNCA debe entrar al repositorio.
+# =============================================================================
+
+# Variables de entorno reales. Este archivo SI se versiona; el .env no.
+.env
+.env.*
+!.env.example
+
+# Respaldos generados por scripts/backup-rspamd.sh
+respaldos/
+*.tar.gz
+*.tar.gz.sha256
+MANIFIESTO.txt
+
+# La contrasena de la interfaz web de Rspamd es un HASH, pero sigue siendo un
+# secreto: con el se entra al panel de estadisticas. La plantilla si se versiona.
+config/local.d/worker-controller.inc
+
+# Claves privadas DKIM generatedas en el servidor. Aunque normalmente viven
+# dentro del volumen Docker, por si alguien monta el directorio a mano.
+/config/local.d/dkim/
+*.key
+*.pub
+
+# Certificado TLS del proxy, si el cliente lo deja aqui en vez de en Coolify.
+*.pem
+*.crt
+*.key
+
+# Archivos de editor y sistema operativo
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# Python (por si alguien usa el validador del estudio)
+__pycache__/
+*.pyc
