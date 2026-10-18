@@ -1,0 +1,127 @@
+# =============================================================================
+# DEMOSTRACIÓN — NO INSTALAR TAL CUAL
+# =============================================================================
+#
+# PLANTILLA DE DEMOSTRACIÓN. Este archivo NO se copia al servidor como está.
+# Muestra qué cambios hacen falta en Dovecot para que Rspamd también revise el
+# correo que YA está guardado en el servidor (el archivo .eml en Maildir).
+#
+# Debe ir en:
+#   /etc/dovecot/conf.d/90-rspamd-sieve.conf
+#
+# -----------------------------------------------------------------------------
+# ¿POR QUÉ DOVECOT, SI POSTFIX YA PASA TODO POR RSPAMD?
+# -----------------------------------------------------------------------------
+# Hay correo que pasa por Postfix pero NO es entregado por el canal SMTP
+# principal, y ese correo nunca llega al milter de Rspamd. El caso típico es el
+# correo que se guarda con `sieve` o `doveadm sieve` desde la cuenta del
+# usuario, o los correos grande movimiento por IMAP.
+#
+# Dovecot tiene su propio mecanismo de milter (`imap` / `sieve`) y así se
+# cubre ese hueco.
+#
+# IMPORTANTE Y HONESTO: esta integración es la que menos se usa y la que
+# primero se puede dejar para después. El 95% del problema se resuelve con el
+# milter de Postfix. Si al cliente le cuesta tiempo o quiere simplificar, se deja Dovecot como
+# complemento, ejecútese más adelante y priorice la lista blanca.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# 1. ACTIVAR EL MILTER DE DOVECOT
+# -----------------------------------------------------------------------------
+# Protocolo del milter. 6 es el estándar de Sendmail y el mismo que usa la
+# configuración de Postfix.
+protocol = sieve
+
+# Socket donde Dovecot escucha las peticiones de milter y se las pasa a Rspamd.
+# OJO: no se pone el puerto de Rspamd (11332) acá. Este es el puerto donde
+# ESCOCHA Dovecot. La conexión hacia Rspamd se define más abajo.
+postmaster_address = postmaster@ejemplo.cl
+
+# -----------------------------------------------------------------------------
+# 2. A DÓNDE MANDA DOVECOT CADA MENSAJE PARA QUE LO FILTRE
+# -----------------------------------------------------------------------------
+# Esta es la parte que casi nadie pone bien: Dovecot necesita un socket
+# MÍO por el que hablar con Rspamd, y su propio socket de escucha.
+sieve_socket = /var/run/dovecot/filter-sieve.sock
+
+# Rspamd habla milter, no sieve. Por eso se declara el protocolo del milter
+# como `sieve` y se le dice a Dovecot que reenvíe a Rspamd:
+milter_connect_timeout = 30s
+milter_command_timeout = 30s
+milter_content_timeout = 300s
+
+# -----------------------------------------------------------------------------
+# 3. LA REGLA QUE LLAMA AL FILTRO (SIEVE)
+# -----------------------------------------------------------------------------
+# El bloque `plugin` de sieve es el que ejecuta la acción. La extensión
+# `vnd.dovecot.sieve` permite entregar el mensaje a un milter externo.
+#
+# `imap` y `sieve` ejecutan la acción del milter sobre el mensaje.
+plugin {
+  sieve = file:~/sieve
+  sieve_plugins = sieve_imap sieve_vnd_dovecot_sieve sieve_extprograms
+  sieve_before = sieve_before
+
+  # Protocolo real que se habla con Rspamd por el socket.
+  sieve_vnd_dovecot_sieve_socket_type = unix
+
+  # Este es el punto que hay que cambiar según el servidor del cliente.
+  # La ruta debe coincidir con `milter_socket` de la configuración de Rspamd,
+  # y con la ruta que aparece en `ps` para el worker `rspamd_proxy`.
+  sieve_vnd_dovecot_sieve_socket = inet:127.0.0.1:11332
+
+  # Comportamiento cuando Rspamd no responde. Igual que en Postfix:
+  # `tempfail` deja el mensaje en cola en vez de aceptarlo sin filtrar.
+  sieve_vnd_dovecot_sieve_milter_default_action = tempfail
+}
+
+# -----------------------------------------------------------------------------
+# 4. ALTERNATIVA SIMPLIFICADA (SI EL SIEVE ES COMPLICADO)
+# -----------------------------------------------------------------------------
+# Si el cliente tiene Dovecot con una configuración que no quiere tocar, se
+# puede aplicar el filtro directamente desde Postfix con `smtpd_milters` +
+# un `header_checks` que marque lo que llega a la IMAP. Es menos limpio, pero
+# no depende de Dovecot.
+
+# =============================================================================
+# REVERSIÓN
+# =============================================================================
+#
+#   rm /etc/dovecot/conf.d/90-rspamd-sieve.conf
+#   doveconf -n
+#   systemctl reload dovecot
+#
+# Ojo: si Dovecot no levanta después de un cambio de esta naturaleza, la causa
+# más común es una ruta mal escrita en `sieve_vnd_dovecot_sieve_socket`.
+# Revise el log:
+#
+#   journalctl -u dovecot -n 50
+# =============================================================================
+
+# =============================================================================
+# CHECKLIST
+# =============================================================================
+# [ ] `doveconf -n` no muestra errores.
+# [ ] Dovecot levanta:           systemctl status dovecot
+# [ ] Un usuario se puede conectar por IMAP.
+# [ ] Un correo enviado por SMTP al usuario igual trae cabeceras de Rspamd
+#     (eso confirma que Postfix ya lo filtró, no Dovecot).
+# [ ] Se probó la reversión.
+#
+# =============================================================================
+# PENDIENTE DE VERIFICAR EN EL SERVIDOR
+# =============================================================================
+# La sintaxis exacta del bloque `plugin` y del nombre del socket de milter de
+# Dovecot cambia entre versiones. Antes de aplicar en producción:
+#
+#   doveconf -n
+#
+# muestra la configuración efectiva que Dovecot realmente entiende. Si una de
+# estas claves no aparece ahí, Dovecot la ignoró en silencio y el filtro no
+# estará funcionando aunque el servicio aparezca "activo".
+#
+# Este ejemplo no se ha ejecutado en ningún servidor. Ver
+# docs/07-PRUEBAS-DE-ACEPTACION.md.
+# =============================================================================

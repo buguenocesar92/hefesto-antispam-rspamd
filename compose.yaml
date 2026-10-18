@@ -1,0 +1,177 @@
+# =============================================================================
+# Hefesto Studio — Kit de despliegue de Rspamd
+# Servicio de seguridad de correo para Pymes con dominio propio.
+#
+# ARQUITECTURA IMPORTANTE (verificada contra upstream):
+#   Rspamd NO es un servidor de correo y NO escucha en puertos SMTP.
+#   La imagen oficial expone solamente 11332 (milter/proxy), 11333 (worker
+#   normal, API HTTP) y 11334 (worker controller, interfaz web).
+#   El correo entra al servidor de correo del cliente (Postfix/Dovecot) y DESDE
+#   ahí se le pasa a Rspamd. Por eso aqui no se publica ningun puerto SMTP.
+#
+# Fuentes de todo lo que aparece en este archivo:
+#   - Dockerfile oficial:  https://github.com/rspamd/rspamd-docker/blob/main/Dockerfile
+#   - Ejemplo oficial:     https://github.com/rspamd/rspamd-docker/blob/main/examples/compose/compose.yaml
+#   - Config 4.2.2:        https://raw.githubusercontent.com/rspamd/rspamd/4.2.2/conf/rspamd.conf
+#   - Docs oficiales:     https://rspamd.com/  (pagina "About Rspamd")
+# =============================================================================
+
+name: hefesto-antispam-rspamd
+
+services:
+  # -----------------------------------------------------------------------------
+  # Redis
+  # -----------------------------------------------------------------------------
+  # ¿Es obligatorio?SI, en el sentido practico de este kit.
+  #
+  # Ojo con la afirmacion habitual de que "Rspamd no arranca sin Redis": la
+  # documentacion oficial dice exactamente lo contrario. La configuracion que
+  # viene de fabrica NO trae servidor Redis definido, y Rspamd arranca igual;
+  # lo que queda DESHABILITADO son Bayes, el greylisting y el rate limiting.
+  #   Fuente: https://rspamd.com/ -> "Connect Rspamd to Redis":
+  #   "The shipped configuration has no Redis server set, so Bayes, greylisting
+  #    and rate limiting stay disabled until you add one".
+  #
+  # Como Rspamd SÍ arranca sin Redis, la diferencia es silenciosa: el cliente
+  # cree que tiene filtro y en realidad esta sin las tres capas que mas
+  # descartan legitimo malTodavia. Por eso en este kit Redis es obligatorio y
+  # ademas hay un healthcheck que lo hace visible.
+  redis:
+    image: redis:8.10.2
+    container_name: hefesto-rspamd-redis
+    restart: unless-stopped
+    # Ajustado a partir del ejemplo oficial de rspamd-docker, sin `--appendonly`.
+    # Redis aqui es cache rapido y con estado reconstruible desde el dump RDB;
+    # AOF solo multiplicaria el uso de disco sin aportar a este caso.
+    command:
+      - redis-server
+      - --save
+      - "60"
+      - "1"
+      - --loglevel
+      - warning
+    sysctls:
+      net.core.somaxconn: 4096
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      # `redis-cli` forma parte de la propia imagen oficial de Redis.
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - rspamd
+    # Decision consciente de Hefesto, no un valor upstream:
+    # Redis aqui guarda clasificadores y contadores, no datos de negocio.
+    mem_limit: 1g
+
+  # -----------------------------------------------------------------------------
+  # Rspamd
+  # -----------------------------------------------------------------------------
+  rspamd:
+    image: rspamd/rspamd:4.2.2
+    container_name: hefesto-rspamd
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      # Variable oficial, usada en examples/compose/compose.yaml de rspamd-docker.
+      # Apunta al nombre de servicio de Redis en la red de Compose.
+      RSPAMD_REDIS_SERVERS: redis
+      # Sin esto, el clasificador bayesiano y el greylisting quedan apagados.
+      RSPAMD_USE_BAYES: "${RSPAMD_USE_BAYES}"
+      RSPAMD_USE_GREYLIST: "${RSPAMD_USE_GREYLIST}"
+      # Resolutor DNS que usara Rspamd para las listas negras (RBL).
+      # Ver docs/03-VARIABLES-Y-COMO-OBTENERLAS.md: se recomienda un
+      # resolutor local recursivo porque muchos RBL rechazan consultas
+      # directas desde IPs de centro de datos.
+      RSPAMD_DNS_SERVERS: "${RSPAMD_DNS_SERVERS}"
+      TZ: "${TZ}"
+    volumes:
+      # /var/lib/rspamd es el VOLUME declarado en el Dockerfile oficial.
+      # Aqui vive lo que NO se regenera: claves DKIM, archivos de bayes,
+      # mapas aprendidos y cache de hyperscan.
+      - rspamd-data:/var/lib/rspamd
+      # Configuracion local del cliente. Solo lectura: Rspamd no debe escribir
+      # en la configuracion, y asi el cliente puede versionarla.
+      - ./config/local.d:/etc/rspamd/local.d:ro
+    ports:
+      # Milter: es donde Postfix (u otro MTA) entrega cada mensaje.
+      - "127.0.0.1:${RSPAMD_MILTER_PORT}:11332"
+      # Controller: interfaz web de estadisticas y administracion.
+      # Bound solo a loopback: se accede por tunel SSH, nunca desde Internet.
+      - "127.0.0.1:${RSPAMD_CONTROLLER_PORT}:11334"
+      # Worker normal: API HTTP, util para diagnostico con curl.
+      - "127.0.0.1:${RSPAMD_HTTP_PORT}:11333"
+    healthcheck:
+      # Copia exacta del HEALTHCHECK del Dockerfile oficial de rspamd-docker:
+      # consulta el endpoint /ping sin autenticar del controller, que siempre
+      # responde "pong" y nunca pide contrasena.
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/11334; printf "GET /ping HTTP/1.0\r\n\r\n" >&3; grep -q pong <&3'
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - rspamd
+
+  # -----------------------------------------------------------------------------
+  # ClamAV (opcional, perfil "antivirus")
+  # -----------------------------------------------------------------------------
+  # NO arranca salvo que se pida explicitamente:
+  #     docker compose --profile antivirus up -d
+  #
+  # ClamAV es lo mas caro del kit en RAM: una instancia se lleva de forma
+  # habitual entre 1 GB y 2 GB solo en cargar firmas. Ver README.md, seccion
+  # "Requisitos", y docs/07-PRUEBAS-DE-ACEPTACION.md.
+  #
+  # Las firmas de ClamAV SI se redescargan solas desde el contenedor al
+  # arrancar. Por eso NO se respaldan (ver docs/05-RESPALDOS-Y-RESTAURACION.md).
+  clamav:
+    image: clamav/clamav:1.5.4
+    container_name: hefesto-rspamd-clamav
+    profiles:
+      - antivirus
+    restart: unless-stopped
+    environment:
+      # FRESHCLAMD_CHECKS controla cuantas descargas de firmas se hacen al
+      # iniciar. Con 1 se limita a una por arranque, que es lo razonable para
+      # un servidor de Pymes y no satura el ancho de banda.
+      FRESHCLAMD_CHECKS: "${CLAMAV_FRESHCLAMD_CHECKS}"
+      TZ: "${TZ}"
+    volumes:
+      - clamav-data:/var/lib/clamav
+    healthcheck:
+      # `clamdscan` verifica el daemon de ClamAV: responde si el daemon
+      # acepta conexiones y las firmas cargadas son utilizables.
+      test: ["CMD-SHELL", "clamdscan --ping 1 || exit 1"]
+      interval: 60s
+      timeout: 15s
+      retries: 5
+      start_period: 300s
+    networks:
+      - rspamd
+    # Decision consciente de Hefesto, no un valor upstream. Por debajo de ~2 GB
+    # clamd se queda sin memoria y corre el riesgo de ser terminado por el
+    # kernel durante la carga de firmas.
+    mem_limit: ${CLAMAV_MEMSIZE}
+
+networks:
+  rspamd:
+    driver: bridge
+
+volumes:
+  # Lo que NO se regenera: claves DKIM, archivos de bayes, mapas aprendidos.
+  rspamd-data:
+  # Clasificadores bayes, greylist, historial, rate limits y claves DKIM
+  # que Rspamd guarda tambien en Redis.
+  redis-data:
+  # Firmas de ClamAV: se redescargan solas, no se respaldan.
+  clamav-data:
