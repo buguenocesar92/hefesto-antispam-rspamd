@@ -29,7 +29,6 @@
 set -euo pipefail
 
 # --- Identificacion -----------------------------------------------------------
-KIT_ID="hefesto-antispam-rspamd"
 SERVICIO_RSPAMD="rspamd"
 SERVICIO_REDIS="redis"
 SERVICIO_CLAMAV="clamav"
