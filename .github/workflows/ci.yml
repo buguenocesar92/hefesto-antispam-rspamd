@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: [main, coolify, 'plan/**', 'feature/**', 'bugfix/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validacion:
+    name: Compose, sintaxis, pruebas y secretos
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar bats, shellcheck, age y gitleaks
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats shellcheck age
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz | tar xz gitleaks
+          sudo mv gitleaks /usr/local/bin/
+
+      - name: El compose renderiza con el .env de ejemplo
+        # Cada paso se ejecuta solo si el repo versiona lo que el paso
+        # necesita. Si no esta versionado, el paso se OMITE de forma visible
+        # (::notice::) con el motivo; nunca se relaja la comprobacion ni se
+        # oculta un fallo. Un paso que se ejecuta y falla rompe el job.
+        run: |
+          set -euo pipefail
+          if [ ! -f compose.yaml ]; then
+            echo "::notice::compose.yaml no esta versionado: se omite la validacion del compose."
+            exit 0
+          fi
+          if [ ! -f .env.example ]; then
+            echo "::notice::.env.example no esta versionado: se omite la validacion del compose (no se usan .env reales)."
+            exit 0
+          fi
+          # Plantilla de entorno para el render: los valores vacios de
+          # .env.example se sustituyen por un marcador, porque el compose
+          # exige algunas variables con la forma ${VAR:?}. Nunca se usa un
+          # .env real, nunca se imprime ningun valor y la plantilla sigue
+          # mandando: si el compose exige una variable que .env.example no
+          # define, el render falla igual.
+          TMP_ENV="$(mktemp)"
+          sed -E 's/^([[:space:]]*[A-Za-z_][A-Za-z0-9_]*=)[[:space:]]*$/\1__PLACEHOLDER__/' .env.example > "$TMP_ENV"
+          if grep -qE '^[[:space:]]*env_file:' compose.yaml; then
+            # El compose declara `env_file: - .env`: se renderiza en un
+            # directorio temporal con la plantilla como .env. Nunca se usa un
+            # .env real.
+            TMP_PROYECTO="$(mktemp -d)"
+            trap 'rm -rf "$TMP_PROYECTO"; rm -f "$TMP_ENV"' EXIT
+            cp compose.yaml "$TMP_PROYECTO/compose.yaml"
+            cp "$TMP_ENV" "$TMP_PROYECTO/.env"
+            docker compose --project-directory "$TMP_PROYECTO" \
+              -f "$TMP_PROYECTO/compose.yaml" --env-file "$TMP_PROYECTO/.env" config --quiet
+          else
+            trap 'rm -f "$TMP_ENV"' EXIT
+            docker compose --env-file "$TMP_ENV" -f compose.yaml config --quiet
+          fi
+
+      - name: Sintaxis de los scripts
+        run: |
+          set -euo pipefail
+          if [ ! -d scripts ]; then
+            echo "::notice::scripts/ no esta versionado: se omite la validacion de sintaxis."
+            exit 0
+          fi
+          if ls scripts/*.py >/dev/null 2>&1; then
+            python3 -m py_compile scripts/*.py
+            echo "py_compile: OK"
+          else
+            echo "::notice::scripts/ no contiene ficheros .py: se omite py_compile."
+          fi
+          if find scripts -name '*.sh' -print -quit | grep -q .; then
+            find scripts -name '*.sh' -print0 | xargs -0 -r shellcheck -S warning -x
+            find scripts -name '*.sh' -print0 | xargs -0 -r -n1 bash -n
+            echo "shellcheck y bash -n: OK"
+          else
+            echo "::notice::scripts/ no contiene ficheros .sh: se omite shellcheck y bash -n."
+          fi
+
+      - name: Suite bats
+        run: |
+          set -euo pipefail
+          if [ ! -d tests ]; then
+            echo "::notice::tests/ no esta versionado: se omite la suite bats."
+            exit 0
+          fi
+          bats tests/
+
+      - name: Buscar secretos en el historico
+        run: gitleaks detect --source . --no-banner --redact
+
+  trivy:
+    name: Analisis de vulnerabilidades y secretos
+    runs-on: ubuntu-24.04
+    needs: validacion
+    steps:
+      - uses: actions/checkout@v4
+      - name: Analizar el repositorio
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: repo
+          scan-ref: .
+          format: table
+          exit-code: '1'
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
