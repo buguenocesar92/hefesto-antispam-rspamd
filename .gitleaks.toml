@@ -1,0 +1,26 @@
+title = "Hefesto kit - gitleaks"
+
+[extend]
+useDefault = true
+
+# Las plantillas de ejemplo son marcadores de posicion que el operador
+# reemplaza por valores reales: no son secretos. Si alguien versionara un
+# valor real en una plantilla, el resto de reglas del repositorio lo sigue
+# detectando en los demas archivos.
+#
+# gitleaks 8.18.x (la version fijada en CI) lee la lista como mapa [allowlist];
+# las versiones 8.19+ leen la forma de array [[allowlists]]. Se declaran las
+# dos para que el kit funcione con cualquiera de las dos.
+[allowlist]
+description = "Plantillas de ejemplo"
+paths = [
+  '''(?i)(^|/)\.env\.example$''',
+  '''(?i)(^|/)[^/]+\.example\.(ya?ml|json|env|txt|conf)$''',
+]
+
+[[allowlists]]
+description = "Plantillas de ejemplo (array)"
+paths = [
+  '''(?i)(^|/)\.env\.example$''',
+  '''(?i)(^|/)[^/]+\.example\.(ya?ml|json|env|txt|conf)$''',
+]

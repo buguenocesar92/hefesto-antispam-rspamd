@@ -37,7 +37,7 @@ services:
   # descartan legitimo malTodavia. Por eso en este kit Redis es obligatorio y
   # ademas hay un healthcheck que lo hace visible.
   redis:
-    image: redis:8.10.2
+    image: redis:8.10.2@sha256:2c2dff791878316e3b083188be0d578423b24813cdda5de0e80ea4f7b3e6bfd6
     container_name: hefesto-rspamd-redis
     restart: unless-stopped
     # Ajustado a partir del ejemplo oficial de rspamd-docker, sin `--appendonly`.
@@ -71,7 +71,7 @@ services:
   # Rspamd
   # -----------------------------------------------------------------------------
   rspamd:
-    image: rspamd/rspamd:4.2.2
+    image: rspamd/rspamd:4.2.2@sha256:33526f94cfbb5ab5485805ad9d6eddb6a52aca6529aad0ce99b67b01c2e756de
     container_name: hefesto-rspamd
     restart: unless-stopped
     depends_on:
@@ -135,7 +135,7 @@ services:
   # Las firmas de ClamAV SI se redescargan solas desde el contenedor al
   # arrancar. Por eso NO se respaldan (ver docs/05-RESPALDOS-Y-RESTAURACION.md).
   clamav:
-    image: clamav/clamav:1.5.4
+    image: clamav/clamav:1.5.4@sha256:e19130cdebaeacc71fa46eab3ed6f69941f2f22aa5e08d55e9197f8edf43ce5e
     container_name: hefesto-rspamd-clamav
     profiles:
       - antivirus

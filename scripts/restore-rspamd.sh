@@ -29,7 +29,6 @@
 set -euo pipefail
 
 # --- Identificacion -----------------------------------------------------------
-KIT_ID="hefesto-antispam-rspamd"
 SERVICIO_RSPAMD="rspamd"
 SERVICIO_REDIS="redis"
 SERVICIO_CLAMAV="clamav"
@@ -47,6 +46,7 @@ E_INTERRUMPIDO=8
 # --- Variables por linea de comando ------------------------------------------
 ARCHIVO_ORIGEN=""
 FORZAR=0
+MODO=""
 MANTENER_CONFIG=0
 
 info()  { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
@@ -64,6 +64,10 @@ while [ "$#" -gt 0 ]; do
         --archivo)  [ "$#" -ge 2 ] || { error "--archivo necesita una ruta"; exit "$E_USO"; }
                     ARCHIVO_ORIGEN="$2"; shift 2 ;;
         --force)    FORZAR=1; shift ;;
+        --dry-run)  MODO="dry-run"; shift ;;
+        --confirmar) [ "$#" -ge 2 ] || { error "--confirmar necesita el valor"; exit 3; }
+                    [ "$2" = "CONFIRMAR_RESTAURACION" ] || { error "El valor de --confirmar debe ser CONFIRMAR_RESTAURACION"; exit 3; }
+                    MODO="confirmado"; shift 2 ;;
         --sin-config) MANTENER_CONFIG=1; shift ;;
         --help|-h)  uso ;;
         *) error "Argumento desconocido: $1"; uso ;;
@@ -73,6 +77,13 @@ done
 if [ -z "$ARCHIVO_ORIGEN" ] && [ "$#" -eq 0 ]; then
     error "Falta indicar el archivo de respaldo."
     uso
+fi
+
+# --- Contrato comun de restauracion (docs/CONTRATO-RESPALDO.md) ----------------
+# Sin --confirmar CONFIRMAR_RESTAURACION no se restaura nada.
+if [ -z "$MODO" ]; then
+    error "Falta --confirmar CONFIRMAR_RESTAURACION (o --dry-run para simular sin escribir)."
+    exit 3
 fi
 
 # --- Precondiciones -----------------------------------------------------------
@@ -147,6 +158,15 @@ tar -xzf "$ARCHIVO_ORIGEN" -C "$TMP"
 
 ORIGEN="$TMP/$RAIZ_ENTRADA"
 [ -d "$ORIGEN" ] || { error "Estructura inesperada en el respaldo."; exit "$E_ARCHIVO_INVALIDO"; }
+if ! python3 scripts/respaldo_contrato.py check --dest "$ORIGEN" \
+        --software "hefesto-antispam" --version "4.2.2" --database "redis"; then
+    error "El respaldo no cumple el contrato de respaldo. NO se restaura."
+    exit "$E_ARCHIVO_INVALIDO"
+fi
+if [ "$MODO" = "dry-run" ]; then
+    info "Simulacion: el respaldo es integro y no se escribio nada."
+    exit "$E_OK"
+fi
 
 # =============================================================================
 paso "2/7 Confirmar que el respaldo esta completo"
@@ -325,4 +345,11 @@ info "    - El historial de bayes: los correos aprendidos como legitimos"
 info "      pueden estar desactualizados si el respaldo es antiguo."
 info "    - Si el cliente cambio de dominio o de clave, hay que rehacer"
 info "      los registros DNS antes de reactivar la firma saliente."
+# --- Contrato comun de restauracion: informe y auditoria --------------------
+python3 scripts/respaldo_contrato.py report --dest "@@origen@@" \
+    --software "@@software@@" --version "@@version@@" --database "@@database@@" \
+    --modo confirmado --resultado restaurado --destino "@@destino@@" || true
+python3 scripts/respaldo_contrato.py audit --root "@@destino@@" \
+    --software "{software}" --operacion restore \
+    --origen "@@origen@@" --destino "@@destino@@" --resultado restaurado || true
 exit "$E_OK"

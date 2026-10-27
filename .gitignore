@@ -40,3 +40,13 @@ Thumbs.db
 # Python (por si alguien usa el validador del estudio)
 __pycache__/
 *.pyc
+# Artefactos locales de sesion/agente: nunca versionar.
+.superpowers/
+# Respaldos, estado de despliegue y auditoria: fuera del repositorio.
+backups/
+logs/
+*.dump
+*.age
+# Claves privadas de los certificados del kit.
+certs/*.key
+certs/*.pem

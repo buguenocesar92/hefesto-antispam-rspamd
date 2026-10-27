@@ -17,8 +17,10 @@
 #   - Firmas de ClamAV. El contenedor clamav las redescarga por su cuenta al
 #     arrancar. Copiarlas cuesta gigabytes y no aporta nada.
 #   - La imagen del contenedor. Se descarga de nuevo desde el registro.
-#   - El `.env`. No contiene secretos, pero es texto chico: el cliente lo
-#     versiona por su cuenta en el repositorio.
+#   - El `.env`. Nunca se copia al respaldo en claro: solo viajan sus
+#     nombres (env.vars) y, si hay receptor age, el .env cifrado (env.age).
+#     Sin receptor configurado, el respaldo sale sin el .env y lo dice en
+#     el manifiesto. La clave publica del receptor es un insumo externo.
 #
 # -----------------------------------------------------------------------------
 # EL RESPALDO CONTIENE SECRETOS
@@ -250,7 +252,7 @@ TOTAL_BYTES="$(du -sb "$DESTINO" | cut -f1)"
     echo "Firmas de ClamAV   Se redescargan solas al arrancar clamav."
     echo "                    Respaldarlas cuesta gigabytes y no aporta."
     echo "Imagenes Docker    Se vuelven a descargar del registro."
-    echo "Archivo .env       Sin secretos y ademas versionado en git."
+    echo "Archivo .env       No viaja: solo nombres (env.vars) y cifrado age."
     echo
     echo "SEGURIDAD DEL ARCHIVO"
     echo "------------------------------------------------------------"
@@ -264,6 +266,17 @@ TOTAL_BYTES="$(du -sb "$DESTINO" | cut -f1)"
     echo "    sudo ./scripts/restore-rspamd.sh $ARCHIVO_FINAL"
     echo
 } > "$MANIFIESTO"
+
+# --- Contrato comun de respaldo (docs/CONTRATO-RESPALDO.md) ---
+# El .env NUNCA se copia en claro: solo viajan sus nombres (env.vars) y, si hay
+# receptor age, el .env cifrado (env.age). Sin receptor, el respaldo sale sin
+# el .env y el manifiesto lo declara. El manifiesto lleva las cinco claves.
+CONTRATO_ENV_META="$(python3 scripts/respaldo_contrato.py env --root . --dest "@@destino@@")" \
+    || { @@prefijo@@ "No se pudo exportar el .env al respaldo."; exit 1; }
+python3 scripts/respaldo_contrato.py manifest --dest "@@destino@@" \
+    --software "@@software@@" --version "@@version@@" --database "@@database@@" \
+    --env-meta "$CONTRATO_ENV_META" \
+    || { @@prefijo@@ "No se pudo escribir manifest.json."; exit 1; }
 
 # --- Paso 8: comprimir --------------------------------------------------------
 info "Comprimiendo. El volumen de bayes puede pesar bastante la primera vez."
